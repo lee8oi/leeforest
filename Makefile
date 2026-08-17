@@ -2,8 +2,8 @@
 
 APP_NAME := leeforest
 BUILD_DIR := bin
-REMOTE_USER := lee
-REMOTE_HOST := YOUR_VPS_IP
+REMOTE_USER := leeforest
+REMOTE_HOST := 66.29.133.233
 REMOTE_PATH := /opt/leeforest
 
 build:
