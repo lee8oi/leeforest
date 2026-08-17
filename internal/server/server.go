@@ -66,10 +66,18 @@ func (s *Server) Start() error {
 	}
 
 	// Configure Autocert manager
+	// Build host list from config
+	hosts := []string{s.cfg.Domain, "www." + s.cfg.Domain}
+	for _, site := range s.cfg.Sites {
+		if site.Hostname != "" {
+			hosts = append(hosts, site.Hostname)
+		}
+	}
+
 	manager := &autocert.Manager{
 		Prompt:     autocert.AcceptTOS,
 		Cache:      autocert.DirCache(s.cfg.CertCache),
-		HostPolicy: autocert.HostWhitelist(s.cfg.Domain, "www."+s.cfg.Domain),
+		HostPolicy: autocert.HostWhitelist(hosts...),
 	}
 
 	// HTTPS server with Autocert TLS config
