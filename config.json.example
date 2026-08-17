@@ -1,0 +1,23 @@
+{
+  "domain": "example.dev",
+  "static_root": "/opt/leeforest/www",
+  "cert_cache": "/opt/leeforest/certs",
+  "listen_https": ":443",
+  "listen_http": ":80",
+  "redirect_http": true,
+  "sites": [
+    {
+      "hostname": "app.example.dev",
+      "upstream_port": 8081,
+      "binary_path": "/opt/leeforest/apps/appname/appname",
+      "strip_prefix": false
+    }
+  ],
+  "api_routes": [
+    {
+      "path": "/api/appname/",
+      "upstream_port": 8081,
+      "strip_prefix": true
+    }
+  ]
+}
