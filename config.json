@@ -5,6 +5,12 @@
   "listen_https": ":443",
   "listen_http": ":80",
   "redirect_http": true,
-  "sites": [],
+  "sites": [
+    {
+      "hostname": "status.leeforest.dev",
+      "upstream_port": 8081,
+      "binary_path": "/opt/leeforest/apps/status/status"
+    }
+  ],
   "api_routes": []
 }
