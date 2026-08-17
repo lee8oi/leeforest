@@ -1,0 +1,26 @@
+[Unit]
+Description=Lee Forest Gateway Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=leeforest
+Group=leeforest
+WorkingDirectory=/opt/leeforest
+ExecStart=/opt/leeforest/leeforest -config /opt/leeforest/config.json
+Restart=always
+RestartSec=5
+
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/leeforest/certs
+ProtectHome=yes
+PrivateTmp=yes
+
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

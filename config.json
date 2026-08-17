@@ -1,0 +1,10 @@
+{
+  "domain": "leeforest.dev",
+  "static_root": "/opt/leeforest/www",
+  "cert_cache": "/opt/leeforest/certs",
+  "listen_https": ":443",
+  "listen_http": ":80",
+  "redirect_http": true,
+  "sites": [],
+  "api_routes": []
+}

@@ -1,0 +1,17 @@
+# Binaries
+bin/
+
+# Local config overrides (production secrets)
+config.local.json
+config.production.json
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
