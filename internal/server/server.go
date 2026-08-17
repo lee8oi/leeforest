@@ -3,10 +3,13 @@ package server
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -27,6 +30,31 @@ func New(cfg *config.Config) *Server {
 	return &Server{
 		cfg:    cfg,
 		router: router.New(cfg),
+	}
+}
+
+// spawnApp runs a child binary and restarts it if it exits.
+func (s *Server) spawnApp(binary string, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	for {
+		cmd := exec.Command(binary)
+		stdoutPipe, _ := cmd.StdoutPipe()
+		stderrPipe, _ := cmd.StderrPipe()
+
+		go io.Copy(os.Stdout, stdoutPipe)
+		go io.Copy(os.Stderr, stderrPipe)
+
+		if err := cmd.Start(); err != nil {
+			log.Printf("Failed to start %s: %v", binary, err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		log.Printf("Started app: %s (PID %d)", binary, cmd.Process.Pid)
+		cmd.Wait()
+		log.Printf("%s exited, restarting in 1s...", binary)
+		time.Sleep(time.Second)
 	}
 }
 
@@ -70,6 +98,15 @@ func (s *Server) Start() error {
 		Handler:      httpHandler,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 5 * time.Second,
+	}
+
+	// Spawn child apps
+	var appWg sync.WaitGroup
+	for _, site := range s.cfg.Sites {
+		if site.BinaryPath != "" {
+			appWg.Add(1)
+			go s.spawnApp(site.BinaryPath, &appWg)
+		}
 	}
 
 	// Setup shutdown signal handling

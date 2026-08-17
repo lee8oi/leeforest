@@ -20,16 +20,17 @@ type Config struct {
 
 // Site defines a subdomain reverse proxy target.
 type Site struct {
-	Hostname    string `json:"hostname"`
-	Upstream    string `json:"upstream"`
-	StripPrefix bool   `json:"strip_prefix"`
+	Hostname     string `json:"hostname"`
+	UpstreamPort int    `json:"upstream_port"`
+	BinaryPath   string `json:"binary_path"`
+	StripPrefix  bool   `json:"strip_prefix"`
 }
 
 // APIRoute defines a path-based reverse proxy target.
 type APIRoute struct {
-	Path        string `json:"path"`
-	Upstream    string `json:"upstream"`
-	StripPrefix bool   `json:"strip_prefix"`
+	Path         string `json:"path"`
+	UpstreamPort int    `json:"upstream_port"`
+	StripPrefix  bool   `json:"strip_prefix"`
 }
 
 // Load reads and parses a JSON config file.

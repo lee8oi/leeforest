@@ -1,6 +1,7 @@
 package router
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -33,7 +34,7 @@ func New(cfg *config.Config) *Router {
 
 	// Build subdomain proxy map
 	for _, site := range cfg.Sites {
-		target, err := url.Parse("http://" + site.Upstream)
+		target, err := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", site.UpstreamPort))
 		if err != nil {
 			continue
 		}
@@ -42,7 +43,7 @@ func New(cfg *config.Config) *Router {
 
 	// Build API route entries
 	for _, route := range cfg.APIRoutes {
-		target, err := url.Parse("http://" + route.Upstream)
+		target, err := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", route.UpstreamPort))
 		if err != nil {
 			continue
 		}
