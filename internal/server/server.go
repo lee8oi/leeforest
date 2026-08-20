@@ -20,10 +20,22 @@ import (
 	"github.com/lee8oi/leeforest/internal/router"
 )
 
+const (
+	pidFilePath = "/opt/leeforest/leeforest.pid"
+	configPath  = "/opt/leeforest/config.json"
+)
+
 // Server manages the HTTPS and HTTP listeners with Autocert.
 type Server struct {
 	cfg    *config.Config
 	router *router.Router
+	apps   map[string]*appInfo // binary_path -> app info
+	mu     sync.RWMutex
+}
+
+type appInfo struct {
+	cancel context.CancelFunc
+	pid    int
 }
 
 // New creates a Server from config.
@@ -31,13 +43,25 @@ func New(cfg *config.Config) *Server {
 	return &Server{
 		cfg:    cfg,
 		router: router.New(cfg),
+		apps:   make(map[string]*appInfo),
 	}
 }
 
 // spawnApp runs a child binary and restarts it if it exits, with exponential
 // backoff on repeated failures. It exits when ctx is cancelled.
-func (s *Server) spawnApp(ctx context.Context, binary string, wg *sync.WaitGroup) {
-	defer wg.Done()
+func (s *Server) spawnApp(ctx context.Context, binary string, wg *sync.WaitGroup) *appInfo {
+	info := &appInfo{}
+	
+	s.mu.Lock()
+	s.apps[binary] = info
+	s.mu.Unlock()
+
+	defer func() {
+		s.mu.Lock()
+		delete(s.apps, binary)
+		s.mu.Unlock()
+		wg.Done()
+	}()
 
 	backoff := time.Second
 	const maxBackoff = 30 * time.Second
@@ -46,7 +70,7 @@ func (s *Server) spawnApp(ctx context.Context, binary string, wg *sync.WaitGroup
 		select {
 		case <-ctx.Done():
 			log.Printf("Stopping app supervisor for %s", binary)
-			return
+			return info
 		default:
 		}
 
@@ -78,6 +102,7 @@ func (s *Server) spawnApp(ctx context.Context, binary string, wg *sync.WaitGroup
 			continue
 		}
 
+		info.pid = cmd.Process.Pid
 		log.Printf("Started app: %s (PID %d)", binary, cmd.Process.Pid)
 
 		err = cmd.Wait()
@@ -85,7 +110,7 @@ func (s *Server) spawnApp(ctx context.Context, binary string, wg *sync.WaitGroup
 		// Check if we're shutting down
 		if ctx.Err() != nil {
 			log.Printf("App %s stopped during shutdown", binary)
-			return
+			return info
 		}
 
 		if err != nil {
@@ -98,6 +123,104 @@ func (s *Server) spawnApp(ctx context.Context, binary string, wg *sync.WaitGroup
 		sleepWithContext(ctx, backoff)
 		backoff = nextBackoff(backoff, maxBackoff)
 	}
+}
+
+// stopApp gracefully terminates a running child app.
+func (s *Server) stopApp(binary string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	info, ok := s.apps[binary]
+	if !ok {
+		return fmt.Errorf("app not found: %s", binary)
+	}
+
+	log.Printf("Stopping app: %s (PID %d)", binary, info.pid)
+	info.cancel()
+	return nil
+}
+
+// reconcileApps compares config.Sites against running apps and starts/stops as needed.
+// Uses the provided ctx for the entire lifetime of the apps, not just reconciliation.
+func (s *Server) reconcileApps(ctx context.Context) error {
+	s.mu.RLock()
+	runningApps := make(map[string]bool)
+	for binary := range s.apps {
+		runningApps[binary] = true
+	}
+	s.mu.RUnlock()
+
+	requiredApps := make(map[string]bool)
+	var appWg sync.WaitGroup
+
+	for _, site := range s.cfg.Sites {
+		if site.BinaryPath == "" {
+			continue
+		}
+		requiredApps[site.BinaryPath] = true
+
+		if runningApps[site.BinaryPath] {
+			continue
+		}
+
+		// Start new app
+		appWg.Add(1)
+		go s.spawnApp(ctx, site.BinaryPath, &appWg)
+	}
+
+	// Stop removed apps
+	for binary := range runningApps {
+		if !requiredApps[binary] {
+			if err := s.stopApp(binary); err != nil {
+				log.Printf("Failed to stop app %s: %v", binary, err)
+			}
+		}
+	}
+
+	// Wait briefly for new apps to start
+	time.Sleep(500 * time.Millisecond)
+
+	return nil
+}
+
+// writePIDFile writes the current process PID to the PID file.
+func (s *Server) writePIDFile() error {
+	return os.WriteFile(pidFilePath, []byte(fmt.Sprintf("%d", os.Getpid())), 0644)
+}
+
+// reload loads a fresh config and reconciles child apps.
+func (s *Server) reload() error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	s.mu.Lock()
+	oldCfg := s.cfg
+	s.cfg = cfg
+	s.mu.Unlock()
+
+	// Update router with new config
+	newRouter := router.New(cfg)
+	s.router = newRouter
+
+	// Reconcile child apps using the app-level context (will be passed from Start())
+	ctx, cancel := context.WithCancel(context.Background())
+	s.appCtx = ctx
+	s.appCancel = cancel
+	
+	if err := s.reconcileApps(ctx); err != nil {
+		return fmt.Errorf("reconciling apps: %w", err)
+	}
+
+	log.Printf("Config reloaded. Active sites:")
+	for _, site := range cfg.Sites {
+		if site.Hostname != "" {
+			log.Printf("  - %s (port %d)", site.Hostname, site.UpstreamPort)
+		}
+	}
+
+	return nil
 }
 
 // sleepWithContext blocks for d, but returns early if ctx is cancelled.
@@ -121,6 +244,12 @@ func nextBackoff(current, max time.Duration) time.Duration {
 
 // Start launches both HTTP and HTTPS listeners. Blocks until stopped.
 func (s *Server) Start() error {
+	// Write PID file
+	if err := s.writePIDFile(); err != nil {
+		return fmt.Errorf("writing PID file: %w", err)
+	}
+	defer os.Remove(pidFilePath)
+
 	// Ensure cert cache directory exists
 	if err := os.MkdirAll(s.cfg.CertCache, 0700); err != nil {
 		return fmt.Errorf("creating cert cache dir: %w", err)
@@ -139,6 +268,11 @@ func (s *Server) Start() error {
 		Cache:      autocert.DirCache(s.cfg.CertCache),
 		HostPolicy: autocert.HostWhitelist(hosts...),
 	}
+
+	// Create app context that lives for the server lifetime
+	appCtx, appCancel := context.WithCancel(context.Background())
+	s.appCtx = appCtx
+	s.appCancel = appCancel
 
 	// HTTPS server with Autocert TLS config
 	httpsServer := &http.Server{
@@ -168,19 +302,18 @@ func (s *Server) Start() error {
 		WriteTimeout: 5 * time.Second,
 	}
 
-	// Spawn child apps with cancellable context
-	appCtx, appCancel := context.WithCancel(context.Background())
-	var appWg sync.WaitGroup
+	// Spawn initial child apps
+	var initialWg sync.WaitGroup
 	for _, site := range s.cfg.Sites {
 		if site.BinaryPath != "" {
-			appWg.Add(1)
-			go s.spawnApp(appCtx, site.BinaryPath, &appWg)
+			initialWg.Add(1)
+			go s.spawnApp(appCtx, site.BinaryPath, &initialWg)
 		}
 	}
 
 	// Setup shutdown signal handling
 	shutdownChan := make(chan os.Signal, 1)
-	signal.Notify(shutdownChan, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(shutdownChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
 	// Shared error channel for server errors
 	errChan := make(chan error, 2)
@@ -203,17 +336,26 @@ func (s *Server) Start() error {
 		}
 	}()
 
-	// Wait for shutdown signal or fatal server error
-	select {
-	case sig := <-shutdownChan:
-		log.Printf("Received signal %v, shutting down...", sig)
-	case err := <-errChan:
-		log.Printf("Server error: %v", err)
+	// Wait for signals in a loop for SIGHUP
+	for {
+		sig := <-shutdownChan
+		switch sig {
+		case syscall.SIGHUP:
+			log.Println("Received SIGHUP, reloading config...")
+			if err := s.reload(); err != nil {
+				log.Printf("Config reload failed: %v", err)
+			}
+			// Continue looping to wait for more signals
+		case syscall.SIGINT, syscall.SIGTERM:
+			log.Printf("Received signal %v, shutting down...", sig)
+			goto shutdown
+		}
 	}
 
-	// Cancel child app context first — signals them to stop and return
-	appCancel()
-	appWg.Wait()
+shutdown:
+	// Cancel child apps
+	s.appCancel()
+	initialWg.Wait()
 	log.Println("All child apps stopped.")
 
 	// Shut down HTTP servers with timeout
