@@ -27,13 +27,13 @@ const (
 
 // Server manages the HTTPS and HTTP listeners with Autocert.
 type Server struct {
-	cfg      *config.Config
-	router   *router.Router
-	apps     map[string]*appInfo
-	appCtx   context.Context
+	cfg       *config.Config
+	router    *router.Router
+	apps      map[string]*appInfo
+	appCtx    context.Context
 	appCancel context.CancelFunc
-	manager  *autocert.Manager
-	mu       sync.RWMutex
+	manager   *autocert.Manager
+	mu        sync.RWMutex
 }
 
 type appInfo struct {
@@ -57,7 +57,7 @@ func (s *Server) hostPolicy(ctx context.Context, host string) error {
 	defer s.mu.RUnlock()
 
 	allowed := map[string]bool{
-		s.cfg.Domain:     true,
+		s.cfg.Domain:         true,
 		"www." + s.cfg.Domain: true,
 	}
 	for _, site := range s.cfg.Sites {
@@ -73,30 +73,22 @@ func (s *Server) hostPolicy(ctx context.Context, host string) error {
 	return nil
 }
 
-// buildHostList returns all allowed hostnames from current config.
-func (s *Server) buildHostList() []string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	hosts := []string{s.cfg.Domain, "www." + s.cfg.Domain}
-	for _, site := range s.cfg.Sites {
-		if site.Hostname != "" {
-			hosts = append(hosts, site.Hostname)
-		}
-	}
-	return hosts
-}
-
 // spawnApp runs a child binary and restarts it if it exits, with exponential
-// backoff on repeated failures. It exits when ctx is cancelled.
-func (s *Server) spawnApp(ctx context.Context, binary string, wg *sync.WaitGroup) *appInfo {
-	info := &appInfo{}
+// backoff on repeated failures. It exits when its individual context is cancelled.
+func (s *Server) spawnApp(parentCtx context.Context, binary string, wg *sync.WaitGroup) {
+	// Each app gets its own cancellable context derived from the parent
+	appCtx, appCancel := context.WithCancel(parentCtx)
+
+	info := &appInfo{
+		cancel: appCancel,
+	}
 
 	s.mu.Lock()
 	s.apps[binary] = info
 	s.mu.Unlock()
 
 	defer func() {
+		appCancel()
 		s.mu.Lock()
 		delete(s.apps, binary)
 		s.mu.Unlock()
@@ -110,18 +102,18 @@ func (s *Server) spawnApp(ctx context.Context, binary string, wg *sync.WaitGroup
 
 	for {
 		select {
-		case <-ctx.Done():
+		case <-appCtx.Done():
 			log.Printf("Stopping app supervisor for %s", binary)
-			return info
+			return
 		default:
 		}
 
-		cmd := exec.CommandContext(ctx, binary)
+		cmd := exec.CommandContext(appCtx, binary)
 
 		stdoutPipe, err := cmd.StdoutPipe()
 		if err != nil {
 			log.Printf("Failed to create stdout pipe for %s: %v", binary, err)
-			sleepWithContext(ctx, backoff)
+			sleepWithContext(appCtx, backoff)
 			backoff = nextBackoff(backoff, maxBackoff)
 			continue
 		}
@@ -129,7 +121,7 @@ func (s *Server) spawnApp(ctx context.Context, binary string, wg *sync.WaitGroup
 		stderrPipe, err := cmd.StderrPipe()
 		if err != nil {
 			log.Printf("Failed to create stderr pipe for %s: %v", binary, err)
-			sleepWithContext(ctx, backoff)
+			sleepWithContext(appCtx, backoff)
 			backoff = nextBackoff(backoff, maxBackoff)
 			continue
 		}
@@ -139,7 +131,7 @@ func (s *Server) spawnApp(ctx context.Context, binary string, wg *sync.WaitGroup
 
 		if err := cmd.Start(); err != nil {
 			log.Printf("Failed to start %s: %v", binary, err)
-			sleepWithContext(ctx, backoff)
+			sleepWithContext(appCtx, backoff)
 			backoff = nextBackoff(backoff, maxBackoff)
 			continue
 		}
@@ -149,9 +141,9 @@ func (s *Server) spawnApp(ctx context.Context, binary string, wg *sync.WaitGroup
 
 		err = cmd.Wait()
 
-		if ctx.Err() != nil {
+		if appCtx.Err() != nil {
 			log.Printf("App %s stopped during shutdown", binary)
-			return info
+			return
 		}
 
 		if err != nil {
@@ -161,7 +153,7 @@ func (s *Server) spawnApp(ctx context.Context, binary string, wg *sync.WaitGroup
 		}
 
 		log.Printf("Restarting %s in %v...", binary, backoff)
-		sleepWithContext(ctx, backoff)
+		sleepWithContext(appCtx, backoff)
 		backoff = nextBackoff(backoff, maxBackoff)
 	}
 }
@@ -169,9 +161,9 @@ func (s *Server) spawnApp(ctx context.Context, binary string, wg *sync.WaitGroup
 // stopApp gracefully terminates a running child app.
 func (s *Server) stopApp(binary string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	info, ok := s.apps[binary]
+	s.mu.Unlock()
+
 	if !ok {
 		return fmt.Errorf("app not found: %s", binary)
 	}
