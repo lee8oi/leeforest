@@ -27,10 +27,12 @@ const (
 
 // Server manages the HTTPS and HTTP listeners with Autocert.
 type Server struct {
-	cfg    *config.Config
-	router *router.Router
-	apps   map[string]*appInfo // binary_path -> app info
-	mu     sync.RWMutex
+	cfg     *config.Config
+	router  *router.Router
+	apps    map[string]*appInfo // binary_path -> app info
+	appCtx  context.Context
+	appCancel context.CancelFunc
+	mu      sync.RWMutex
 }
 
 type appInfo struct {
@@ -151,7 +153,6 @@ func (s *Server) reconcileApps(ctx context.Context) error {
 	s.mu.RUnlock()
 
 	requiredApps := make(map[string]bool)
-	var appWg sync.WaitGroup
 
 	for _, site := range s.cfg.Sites {
 		if site.BinaryPath == "" {
@@ -164,8 +165,7 @@ func (s *Server) reconcileApps(ctx context.Context) error {
 		}
 
 		// Start new app
-		appWg.Add(1)
-		go s.spawnApp(ctx, site.BinaryPath, &appWg)
+		go s.spawnApp(ctx, site.BinaryPath, nil)
 	}
 
 	// Stop removed apps
@@ -196,7 +196,6 @@ func (s *Server) reload() error {
 	}
 
 	s.mu.Lock()
-	oldCfg := s.cfg
 	s.cfg = cfg
 	s.mu.Unlock()
 
@@ -204,12 +203,25 @@ func (s *Server) reload() error {
 	newRouter := router.New(cfg)
 	s.router = newRouter
 
-	// Reconcile child apps using the app-level context (will be passed from Start())
-	ctx, cancel := context.WithCancel(context.Background())
-	s.appCtx = ctx
-	s.appCancel = cancel
+	// Create new context for apps (previous context will be abandoned)
+	newAppCtx, newAppCancel := context.WithCancel(context.Background())
 	
-	if err := s.reconcileApps(ctx); err != nil {
+	s.mu.Lock()
+	s.appCtx = newAppCtx
+	s.appCancel = newAppCancel
+	s.mu.Unlock()
+	
+	// Stop old apps
+	if s.appCtx != nil {
+		for binary := range s.apps {
+			if err := s.stopApp(binary); err != nil {
+				log.Printf("Failed to stop old app %s: %v", binary, err)
+			}
+		}
+	}
+
+	// Reconcile child apps using the new context
+	if err := s.reconcileApps(newAppCtx); err != nil {
 		return fmt.Errorf("reconciling apps: %w", err)
 	}
 
