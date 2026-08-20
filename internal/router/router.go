@@ -2,6 +2,7 @@ package router
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -24,6 +25,23 @@ type apiEntry struct {
 	stripPrefix bool
 }
 
+// newProxy creates a ReverseProxy that sets X-Forwarded-For with the real client IP.
+func newProxy(target *url.URL) *httputil.ReverseProxy {
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	originalDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		originalDirector(req)
+		if clientIP, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
+			if prior := req.Header.Get("X-Forwarded-For"); prior != "" {
+				req.Header.Set("X-Forwarded-For", prior+", "+clientIP)
+			} else {
+				req.Header.Set("X-Forwarded-For", clientIP)
+			}
+		}
+	}
+	return proxy
+}
+
 // New creates a Router configured from the given Config.
 func New(cfg *config.Config) *Router {
 	r := &Router{
@@ -38,7 +56,7 @@ func New(cfg *config.Config) *Router {
 		if err != nil {
 			continue
 		}
-		r.sites[site.Hostname] = httputil.NewSingleHostReverseProxy(target)
+		r.sites[site.Hostname] = newProxy(target)
 	}
 
 	// Build API route entries
@@ -49,7 +67,7 @@ func New(cfg *config.Config) *Router {
 		}
 		r.apiRoutes = append(r.apiRoutes, apiEntry{
 			prefix:      route.Path,
-			proxy:       httputil.NewSingleHostReverseProxy(target),
+			proxy:       newProxy(target),
 			stripPrefix: route.StripPrefix,
 		})
 	}
