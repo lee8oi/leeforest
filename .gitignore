@@ -4,6 +4,7 @@ bin/
 # Local config overrides (production secrets)
 config.local.json
 config.production.json
+config.json
 
 # Editor files
 .vscode/
