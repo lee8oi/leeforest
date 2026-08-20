@@ -27,12 +27,13 @@ const (
 
 // Server manages the HTTPS and HTTP listeners with Autocert.
 type Server struct {
-	cfg     *config.Config
-	router  *router.Router
-	apps    map[string]*appInfo // binary_path -> app info
-	appCtx  context.Context
+	cfg      *config.Config
+	router   *router.Router
+	apps     map[string]*appInfo
+	appCtx   context.Context
 	appCancel context.CancelFunc
-	mu      sync.RWMutex
+	manager  *autocert.Manager
+	mu       sync.RWMutex
 }
 
 type appInfo struct {
@@ -49,11 +50,48 @@ func New(cfg *config.Config) *Server {
 	}
 }
 
+// hostPolicy returns a dynamic Autocert HostPolicy that checks against
+// the server's current config. Called on every TLS handshake.
+func (s *Server) hostPolicy(ctx context.Context, host string) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	allowed := map[string]bool{
+		s.cfg.Domain:     true,
+		"www." + s.cfg.Domain: true,
+	}
+	for _, site := range s.cfg.Sites {
+		if site.Hostname != "" {
+			allowed[site.Hostname] = true
+		}
+	}
+
+	if !allowed[host] {
+		return fmt.Errorf("acme/autocert: host %q not in whitelist", host)
+	}
+
+	return nil
+}
+
+// buildHostList returns all allowed hostnames from current config.
+func (s *Server) buildHostList() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	hosts := []string{s.cfg.Domain, "www." + s.cfg.Domain}
+	for _, site := range s.cfg.Sites {
+		if site.Hostname != "" {
+			hosts = append(hosts, site.Hostname)
+		}
+	}
+	return hosts
+}
+
 // spawnApp runs a child binary and restarts it if it exits, with exponential
 // backoff on repeated failures. It exits when ctx is cancelled.
 func (s *Server) spawnApp(ctx context.Context, binary string, wg *sync.WaitGroup) *appInfo {
 	info := &appInfo{}
-	
+
 	s.mu.Lock()
 	s.apps[binary] = info
 	s.mu.Unlock()
@@ -62,7 +100,9 @@ func (s *Server) spawnApp(ctx context.Context, binary string, wg *sync.WaitGroup
 		s.mu.Lock()
 		delete(s.apps, binary)
 		s.mu.Unlock()
-		wg.Done()
+		if wg != nil {
+			wg.Done()
+		}
 	}()
 
 	backoff := time.Second
@@ -109,7 +149,6 @@ func (s *Server) spawnApp(ctx context.Context, binary string, wg *sync.WaitGroup
 
 		err = cmd.Wait()
 
-		// Check if we're shutting down
 		if ctx.Err() != nil {
 			log.Printf("App %s stopped during shutdown", binary)
 			return info
@@ -143,7 +182,6 @@ func (s *Server) stopApp(binary string) error {
 }
 
 // reconcileApps compares config.Sites against running apps and starts/stops as needed.
-// Uses the provided ctx for the entire lifetime of the apps, not just reconciliation.
 func (s *Server) reconcileApps(ctx context.Context) error {
 	s.mu.RLock()
 	runningApps := make(map[string]bool)
@@ -199,29 +237,15 @@ func (s *Server) reload() error {
 	s.cfg = cfg
 	s.mu.Unlock()
 
-	// Update router with new config
-	newRouter := router.New(cfg)
-	s.router = newRouter
+	// Hot-swap router with new config (thread-safe, no pointer replacement)
+	s.router.Reload(cfg)
 
-	// Create new context for apps (previous context will be abandoned)
-	newAppCtx, newAppCancel := context.WithCancel(context.Background())
-	
-	s.mu.Lock()
-	s.appCtx = newAppCtx
-	s.appCancel = newAppCancel
-	s.mu.Unlock()
-	
-	// Stop old apps
-	if s.appCtx != nil {
-		for binary := range s.apps {
-			if err := s.stopApp(binary); err != nil {
-				log.Printf("Failed to stop old app %s: %v", binary, err)
-			}
-		}
-	}
+	// Reconcile child apps using the existing app context
+	s.mu.RLock()
+	ctx := s.appCtx
+	s.mu.RUnlock()
 
-	// Reconcile child apps using the new context
-	if err := s.reconcileApps(newAppCtx); err != nil {
+	if err := s.reconcileApps(ctx); err != nil {
 		return fmt.Errorf("reconciling apps: %w", err)
 	}
 
@@ -267,19 +291,13 @@ func (s *Server) Start() error {
 		return fmt.Errorf("creating cert cache dir: %w", err)
 	}
 
-	// Build host list from config for Autocert whitelist
-	hosts := []string{s.cfg.Domain, "www." + s.cfg.Domain}
-	for _, site := range s.cfg.Sites {
-		if site.Hostname != "" {
-			hosts = append(hosts, site.Hostname)
-		}
-	}
-
+	// Configure Autocert manager with dynamic host policy
 	manager := &autocert.Manager{
 		Prompt:     autocert.AcceptTOS,
 		Cache:      autocert.DirCache(s.cfg.CertCache),
-		HostPolicy: autocert.HostWhitelist(hosts...),
+		HostPolicy: s.hostPolicy,
 	}
+	s.manager = manager
 
 	// Create app context that lives for the server lifetime
 	appCtx, appCancel := context.WithCancel(context.Background())
@@ -357,7 +375,6 @@ func (s *Server) Start() error {
 			if err := s.reload(); err != nil {
 				log.Printf("Config reload failed: %v", err)
 			}
-			// Continue looping to wait for more signals
 		case syscall.SIGINT, syscall.SIGTERM:
 			log.Printf("Received signal %v, shutting down...", sig)
 			goto shutdown
