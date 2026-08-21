@@ -73,6 +73,10 @@ The Leeforest Gateway is a Go application providing TLS termination, reverse pro
 
 - `Load(path)` reads file, unmarshals JSON, calls `validate()`
 - Validation: `domain`, `static_root`, `cert_cache` required; `listen_https` and `listen_http` default to `:443` and `:80` if empty
+- Site validation: `hostname` non-empty, `upstream_port` 1–65535, no duplicate hostnames
+- APIRoute validation: `path` non-empty, `upstream_port` 1–65535, no duplicate paths
+- `binary_path` optional (empty = proxy-only site, no app supervision)
+- Port sharing between sites and api_routes allowed (valid pattern)
 - No defaults for `Sites` or `APIRoutes` — empty arrays are valid
 
 **internal/router/router.go**
@@ -241,13 +245,11 @@ For HTTP (port 80):
 
     NoNewPrivileges=yes
     ProtectSystem=strict
-    ReadWritePaths=/opt/leeforest/certs
+    ReadWritePaths=/opt/leeforest
     ProtectHome=yes
     PrivateTmp=yes
     AmbientCapabilities=CAP_NET_BIND_SERVICE
     CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-
-**WARNING — Known service file discrepancy:** The repo copy of `deploy/leeforest.service` has `ReadWritePaths=/opt/leeforest/certs` only, but `server.go` writes its PID file to `/opt/leeforest/leeforest.pid`. The handoff documents this was expanded to `/opt/leeforest` after a past bug (#4). Either the repo copy is stale or the VPS copy was manually patched. **Verify the actual service file on the VPS.**
 
 **Network exposure:**
 - Ports 80 and 443 bound via `CAP_NET_BIND_SERVICE` (no root needed)
@@ -297,7 +299,7 @@ For HTTP (port 80):
 
 3. **`config.json` overwritten by git push** — Post-receive hook's `git checkout -f` overwrote config.json. Fixed by adding to `.gitignore`.
 
-4. **Systemd ProtectSystem=strict blocking PID file** — Could not write PID file to `/opt/leeforest/`. Fixed by expanding `ReadWritePaths`. **Note: repo service file may not reflect this fix — verify on VPS.**
+4. **Systemd ProtectSystem=strict blocking PID file** — Could not write PID file to `/opt/leeforest/`. Fixed by expanding `ReadWritePaths` to `/opt/leeforest` in both the repo service file and the VPS copy.
 
 5. **Nil cancel function panic** — `stopApp` called `info.cancel()` but `appInfo.cancel` was never assigned. Fixed by deriving per-app context at spawn time and storing cancel in `appInfo`.
 

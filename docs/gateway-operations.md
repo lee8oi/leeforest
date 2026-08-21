@@ -236,7 +236,7 @@ Config lives at `/opt/leeforest/config.json` on the VPS. Example file (`config.j
         {
           "hostname": "app.example.dev",
           "upstream_port": 8081,
-          "binary_path": "/opt/leeforest/apps/appname/appname",
+          "binary_path": "/opt/leeforest/apps/appname/appname"
         }
       ],
       "api_routes": [
@@ -263,11 +263,9 @@ Config lives at `/opt/leeforest/config.json` on the VPS. Example file (`config.j
 
 **Site fields:**
 
-| Field | Type | Required | Description |
-|---|---|---|---|
 | `hostname` | string | Yes | Subdomain for vhost matching (e.g., `app.leeforest.dev`) |
 | `upstream_port` | int | Yes | Localhost port the child app listens on |
-| `binary_path` | string | Yes | Absolute path to child app binary |
+| `binary_path` | string | No | Absolute path to child app binary (empty = proxy-only site, no supervision) |
 
 **APIRoute fields:**
 
@@ -311,7 +309,7 @@ Located at `/etc/systemd/system/leeforest.service`. Repo copy at `deploy/leefore
     # Hardening
     NoNewPrivileges=yes
     ProtectSystem=strict
-    ReadWritePaths=/opt/leeforest/certs
+    ReadWritePaths=/opt/leeforest
     ProtectHome=yes
     PrivateTmp=yes
 
@@ -321,13 +319,11 @@ Located at `/etc/systemd/system/leeforest.service`. Repo copy at `deploy/leefore
     [Install]
     WantedBy=multi-user.target
 
-**WARNING:** The repo copy has `ReadWritePaths=/opt/leeforest/certs` only, but `server.go` writes its PID file to `/opt/leeforest/leeforest.pid` (parent directory). The handoff states this was expanded to `/opt/leeforest` after Bug #4. **Verify the actual service file on the VPS matches what the gateway needs.** If the VPS copy still has only `/opt/leeforest/certs`, the gateway cannot write its PID file under systemd.
+The service file in the repo (`deploy/leeforest.service`) and on the VPS (`/etc/systemd/system/leeforest.service`) are kept in sync. If changes are needed:
 
-To update the service file:
-
-    # Edit the actual file on the VPS
-    sudo nano /etc/systemd/system/leeforest.service
-    # Change ReadWritePaths to: /opt/leeforest /opt/leeforest/certs
+    # Edit the repo copy, then deploy
+    scp deploy/leeforest.service leeforestvps:/tmp/leeforest.service.new
+    sudo mv /tmp/leeforest.service.new /etc/systemd/system/leeforest.service
     sudo systemctl daemon-reload
     sudo systemctl restart leeforest
 
@@ -455,6 +451,12 @@ Common causes:
 Look for `Config reload failed:` message. Common causes:
 - `config.json` has invalid JSON
 - Required fields missing (domain, static_root, cert_cache)
+- Site hostname empty: `sites[N]: hostname is required`
+- Site port invalid: `sites[N] (hostname): upstream_port must be between 1 and 65535`
+- Duplicate site hostname: `sites[N] (hostname): duplicate hostname`
+- API route path empty: `api_routes[N]: path is required`
+- API route port invalid: `api_routes[N] (path): upstream_port must be between 1 and 65535`
+- Duplicate API path: `api_routes[N] (path): duplicate path`
 - File not readable by leeforest user
 
 ### Child app not starting
@@ -538,10 +540,8 @@ Gateway uses exponential backoff (1s → 2s → 4s → ... max 30s). Check app-s
 
 ## Future Improvements
 
-- **Config validation on reload** — reject bad configs before applying (currently applies then logs error)
 - **Binary change detection** — restart apps whose binary file changed during reconcile
 - **Gateway health endpoint** — separate from child app health checks
 - **Admin API** — list apps, check status, trigger reloads programmatically
 - **Per-handler deadline clearing** — for WebSocket apps instead of global timeout relaxation
 - **Automated backups** — no strategy currently in place
-- **Service file sync** — repo copy may not match VPS copy (ReadWritePaths discrepancy)
