@@ -46,7 +46,7 @@ A custom Go gateway server on a Debian 12 VPS that handles TLS termination, reve
 ### Systemd
 
 - Service: leeforest.service at /etc/systemd/system/leeforest.service
-- ProtectSystem=strict with ReadWritePaths=/opt/leeforest /var/log/sysconsole
+- ProtectSystem=strict with ReadWritePaths=/opt/leeforest
 - AmbientCapabilities=CAP_NET_BIND_SERVICE (for binding ports 80/443)
 - NoNewPrivileges=yes, ProtectHome=yes, PrivateTmp=yes
 
@@ -134,18 +134,11 @@ A custom Go gateway server on a Debian 12 VPS that handles TLS termination, reve
 - Endpoints: GET / (HTML), GET /health (JSON)
 - Stdlib only, no external dependencies
 
-### sysconsole (port 8083)
-- Subdomain: sysconsole.leeforest.dev
-- Binary: /opt/leeforest/apps/sysconsole/sysconsole
-- Repo: /opt/git/sysconsole.git
-- Details: Previously existing app, details TBD
-
 ---
 
 ## Port Allocations
 
 - 8081: status
-- 8083: sysconsole
 - 8084: testapp (temporary, removed)
 - Recommend: new apps use 8082, 8085+
 

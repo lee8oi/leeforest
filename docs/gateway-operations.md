@@ -287,7 +287,6 @@ Config lives at `/opt/leeforest/config.json` on the VPS. Example file (`config.j
 |---|---|---|
 | 8081 | status | Active |
 | 8082 | (available) | Reserved for next app |
-| 8083 | sysconsole | Active |
 | 8084 | testapp | Removed (temporary) |
 | 8085+ | (available) | Available for new apps |
 

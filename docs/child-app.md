@@ -54,7 +54,6 @@ Optional fields:
 Port assignments should avoid conflicts. Current allocations:
 
 - 8081: status
-- 8083: sysconsole
 
 ### 5. Reload Gateway
 

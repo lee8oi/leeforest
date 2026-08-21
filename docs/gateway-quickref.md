@@ -77,7 +77,6 @@
 
     8081  status       (active)
     8082  (available)
-    8083  sysconsole   (active)
     8084  (skip — was temporary testapp)
     8085+ available
 
