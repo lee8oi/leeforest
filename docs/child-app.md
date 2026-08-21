@@ -50,6 +50,9 @@ Add a new entry to the sites array:
 Port assignments should avoid conflicts. Current allocations:
 
 - 8081: status
+- 8082: available for next app
+- 8084: skip (previously used by temporary testapp)
+- 8085+: available
 
 ### 5. Reload Gateway
 
