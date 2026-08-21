@@ -67,5 +67,36 @@ func (c *Config) validate() error {
 	if c.ListenHTTP == "" {
 		c.ListenHTTP = ":80"
 	}
+
+	// Validate sites
+	seenHosts := make(map[string]bool)
+	for i, site := range c.Sites {
+		if site.Hostname == "" {
+			return fmt.Errorf("sites[%d]: hostname is required", i)
+		}
+		if site.UpstreamPort <= 0 || site.UpstreamPort > 65535 {
+			return fmt.Errorf("sites[%d] (%s): upstream_port must be between 1 and 65535", i, site.Hostname)
+		}
+		if seenHosts[site.Hostname] {
+			return fmt.Errorf("sites[%d] (%s): duplicate hostname", i, site.Hostname)
+		}
+		seenHosts[site.Hostname] = true
+	}
+
+	// Validate API routes
+	seenPaths := make(map[string]bool)
+	for i, route := range c.APIRoutes {
+		if route.Path == "" {
+			return fmt.Errorf("api_routes[%d]: path is required", i)
+		}
+		if route.UpstreamPort <= 0 || route.UpstreamPort > 65535 {
+			return fmt.Errorf("api_routes[%d] (%s): upstream_port must be between 1 and 65535", i, route.Path)
+		}
+		if seenPaths[route.Path] {
+			return fmt.Errorf("api_routes[%d] (%s): duplicate path", i, route.Path)
+		}
+		seenPaths[route.Path] = true
+	}
+
 	return nil
 }
