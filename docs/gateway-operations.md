@@ -237,7 +237,6 @@ Config lives at `/opt/leeforest/config.json` on the VPS. Example file (`config.j
           "hostname": "app.example.dev",
           "upstream_port": 8081,
           "binary_path": "/opt/leeforest/apps/appname/appname",
-          "strip_prefix": false
         }
       ],
       "api_routes": [
@@ -269,7 +268,6 @@ Config lives at `/opt/leeforest/config.json` on the VPS. Example file (`config.j
 | `hostname` | string | Yes | Subdomain for vhost matching (e.g., `app.leeforest.dev`) |
 | `upstream_port` | int | Yes | Localhost port the child app listens on |
 | `binary_path` | string | Yes | Absolute path to child app binary |
-| `strip_prefix` | bool | No | Unused for site routes (only affects API routes) |
 
 **APIRoute fields:**
 

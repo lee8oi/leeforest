@@ -9,8 +9,7 @@
     {
       "hostname": "app.example.dev",
       "upstream_port": 8081,
-      "binary_path": "/opt/leeforest/apps/appname/appname",
-      "strip_prefix": false
+      "binary_path": "/opt/leeforest/apps/appname/appname"
     }
   ],
   "api_routes": [

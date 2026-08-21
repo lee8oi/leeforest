@@ -23,7 +23,6 @@ type Site struct {
 	Hostname     string `json:"hostname"`
 	UpstreamPort int    `json:"upstream_port"`
 	BinaryPath   string `json:"binary_path"`
-	StripPrefix  bool   `json:"strip_prefix"`
 }
 
 // APIRoute defines a path-based reverse proxy target.

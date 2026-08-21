@@ -63,7 +63,6 @@ The Leeforest Gateway is a Go application providing TLS termination, reverse pro
         Hostname     string `json:"hostname"`
         UpstreamPort int    `json:"upstream_port"`
         BinaryPath   string `json:"binary_path"`
-        StripPrefix  bool   `json:"strip_prefix"`
     }
 
     type APIRoute struct {

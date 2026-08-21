@@ -47,10 +47,6 @@ Add a new entry to the sites array:
       "binary_path": "/opt/leeforest/apps/<appname>/<appname>"
     }
 
-Optional fields:
-
-- strip_prefix: boolean (default false) — strips the API route prefix before proxying
-
 Port assignments should avoid conflicts. Current allocations:
 
 - 8081: status
