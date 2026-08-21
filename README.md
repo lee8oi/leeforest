@@ -1,9 +1,10 @@
 # leeforest.dev Gateway Server
+
 A minimal Go-based web gateway with automatic Let's Encrypt TLS termination, 
 static file serving, child app spawning, and reverse proxy routing.
 
-Designed for self-hosted deployment on a single VPS with zero external 
-dependencies beyond the Go binary and the standard library.
+Designed for self-hosted deployment on a single VPS. The only external 
+dependency is golang.org/x/crypto for Autocert (Let's Encrypt) support.
 
 ## Features
 
@@ -12,14 +13,16 @@ dependencies beyond the Go binary and the standard library.
 - Static file serving from disk (update content without rebuilding)
 - Subdomain-based reverse proxy routing
 - API path-based reverse proxy routing
-- Child app spawning with automatic restart on crash
+- Child app spawning with automatic restart on crash (exponential backoff)
 - Dynamic TLS whitelist (reads subdomains from config)
+- Hot-reload configuration via SIGHUP (zero-downtime)
+- Config validation for sites and API routes on load and reload
 - systemd service with auto-restart
 - Push-to-deploy via bare Git repository and post-receive hook
 
 ## Requirements
 
-- Go 1.23 or newer
+- Go 1.26 or newer
 - A VPS with ports 80 and 443 open
 - A domain name with DNS A records pointing to your VPS
 
@@ -34,9 +37,11 @@ Build the binary:
 
     go build -o leeforest ./cmd/gateway
 
-Run locally (without TLS for development):
+Run locally (use a local config with appropriate listen addresses):
 
     ./leeforest -config config.json
+
+See docs/local-build.md for local development and testing guidance.
 
 ## Project Structure
 
@@ -55,12 +60,22 @@ Run locally (without TLS for development):
     │   ├── index.html
     │   └── assets/
     ├── deploy/
-    │   └── leeforest.service    # systemd unit file
-    ├── config.json              # Runtime config (gitignored in production)
-    ├── config.json.example      # Reference config for new users
+    │   ├── leeforest.service    # systemd unit file
+    │   ├── deployment.sh        # Initial server setup script
+    │   └── reload-gateway.sh    # SIGHUP reload script
+    ├── docs/
+    │   ├── child-app.md        # Child app management guide
+    │   └── local-build.md      # Local build and testing guide
+    ├── gateway-structure.md    # Architecture reference
+    ├── gateway-operations.md   # Operations manual
+    ├── GATEWAY-QUICKREF.md     # Quick reference cheat sheet
+    ├── config.json.example     # Reference config (copy to config.json)
     ├── go.mod
     ├── go.sum
     └── Makefile
+
+Note: config.json is gitignored and exists only on the VPS at 
+/opt/leeforest/config.json. Use config.json.example as a template.
 
 ## Configuration
 
@@ -70,23 +85,32 @@ Copy the example config and customize:
 
 Config fields:
 
-    domain          Primary domain name (added to TLS whitelist)
-    static_root     Path to static file directory on disk
-    cert_cache      Path to store Let's Encrypt certificates
+    domain          Primary domain name (required, added to TLS whitelist)
+    static_root     Path to static file directory on disk (required)
+    cert_cache      Path to store Let's Encrypt certificates (required)
     listen_https    TLS server bind address (default :443)
     listen_http     HTTP server bind address (default :80)
-    redirect_http   If true, redirects HTTP to HTTPS (default true)
+    redirect_http   If true, redirects HTTP to HTTPS (default false)
 
     sites[]         Subdomain reverse proxy targets
-      hostname        Subdomain that routes to this app
-      upstream_port   Port the child app listens on
-      binary_path     Path to the child app binary (empty = no spawn)
-      strip_prefix    Remove hostname prefix from path (default false)
+      hostname        Subdomain that routes to this app (required)
+      upstream_port   Port the child app listens on (required, 1-65535)
+      binary_path     Path to the child app binary (optional, empty = proxy-only)
 
     api_routes[]    Path-based reverse proxy targets
-      path            URL path prefix that routes to app
-      upstream_port   Port the child app listens on
+      path            URL path prefix that routes to app (required)
+      upstream_port   Port the child app listens on (required, 1-65535)
       strip_prefix    Strip the path prefix before forwarding (default false)
+
+Config is validated on load and on SIGHUP reload. Validation checks:
+- Required top-level fields (domain, static_root, cert_cache)
+- Site hostnames are non-empty and unique
+- Site upstream_port is 1-65535
+- API route paths are non-empty and unique
+- API route upstream_port is 1-65535
+
+A failed reload leaves the previous config in effect — the gateway 
+continues running without interruption.
 
 ## Deployment
 
@@ -103,6 +127,9 @@ Install systemd service:
     sudo cp deploy/leeforest.service /etc/systemd/system/
     sudo systemctl daemon-reload
     sudo systemctl enable leeforest
+
+For full initial server setup, see deploy/deployment.sh and 
+gateway-operations.md.
 
 ### Push-to-Deploy
 
@@ -165,6 +192,15 @@ Add subdomain A records for child apps as needed:
 
     app   A     YOUR_VPS_IP
 
+### Reloading Config Without Restart
+
+After editing config.json on the VPS, reload without downtime:
+
+    /opt/leeforest/scripts/reload-gateway.sh
+
+This sends SIGHUP to the gateway, which reloads config, reconciles 
+child apps, and updates routing. No restart required.
+
 ## Adding a Child App
 
 1. Build a Go binary that listens on a localhost port:
@@ -187,7 +223,7 @@ Add subdomain A records for child apps as needed:
 
        scp appname leeforest@your-vps-ip:/opt/leeforest/apps/appname/appname
 
-3. Add a DNS A record for the subdomain on Namecheap (or your registrar)
+3. Add a DNS A record for the subdomain on your registrar
 
 4. Add a site entry to config.json on the VPS:
 
@@ -197,19 +233,44 @@ Add subdomain A records for child apps as needed:
          "binary_path": "/opt/leeforest/apps/appname/appname"
        }
 
-5. Restart the gateway:
+5. Reload the gateway:
 
-       sudo systemctl restart leeforest
+       /opt/leeforest/scripts/reload-gateway.sh
 
-The gateway will spawn the child app on startup, route requests to it 
-by subdomain, and obtain a TLS certificate automatically via Let's Encrypt.
+The gateway will spawn the child app, add the subdomain to the Autocert 
+whitelist, and route HTTPS traffic to it. No restart required — existing 
+apps continue running.
+
+On first HTTPS request, Autocert provisions a Let's Encrypt certificate 
+automatically.
+
+For full child app management including removal and git-based deployment, 
+see docs/child-app.md.
+
+## WebSocket Support
+
+The reverse proxy handles WebSocket upgrades automatically. The gateway's 
+IdleTimeout (120s) will close inactive connections — client-side heartbeat 
+pings every 20-30s are recommended for long-lived connections.
+
+## Documentation
+
+| File | Description |
+|---|---|
+| gateway-structure.md | Architecture reference — codebase structure, module deep-dives, concurrency model |
+| gateway-operations.md | Operations manual — deployment, config, troubleshooting, recovery |
+| GATEWAY-QUICKREF.md | Quick reference cheat sheet for common commands |
+| docs/child-app.md | Child app management guide — adding, removing, deploying apps |
+| docs/local-build.md | Local building, testing, and deployment instructions |
 
 ## Security
 
 - Gateway runs as a dedicated unprivileged user
-- systemd hardening: ProtectSystem, NoNewPrivileges, PrivateTmp
+- systemd hardening: ProtectSystem=strict, NoNewPrivileges, PrivateTmp, ProtectHome
 - CAP_NET_BIND_SERVICE allows binding ports 80/443 without root
-- Child apps inherit the same user context
+- Config validation rejects invalid configs before applying them
+- Child apps listen on localhost only — not externally reachable
+- All external traffic must pass through gateway (TLS termination + routing)
 
 ## License
 
